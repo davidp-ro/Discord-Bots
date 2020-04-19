@@ -48,6 +48,14 @@ Disclaimer:
 https://github.com/davidp-ro/Discord-Bots/issues, if it's not high-priority, or if neccesary on the
 email: davidpescariu12 (at) gmail (dot) com
 
+----------------
+Error code list (theese might get shown on Discord.):
+
+SS--EXCEPT-GET_STATS - An exception occured in the get_player_stats_for_game and got returned to discord. (status_code 1000)
+SS--FAIL_UNKNOWN - Something failed where we get the stats, but it was unexpected.
+SS--TRIM_FAILED - Got return_code = 9 aka module failed (Trimmer.game_stats).
+
+SS-STEAM--FAILED_CONNECTION - Steam Servers returned 503.
 """
 
 # Logger:
@@ -60,6 +68,9 @@ import requests
 import steam
 import re
 import datetime
+
+# Other Steam Stats Modules:
+from text_trim import Trimmer
 
 # Discord:
 import discord
@@ -94,6 +105,7 @@ def transform_steam_url_to_steam64ID(id_):
     except Exception as exc:
         logging.warning('Unexpected exception!')
         logging.exception('Execption in transform_steam_url_to_steam64ID')
+        return id_ # This covers the case where the id is already in the SteamID format.
 
 def get_news_from_steamNetAPI(game_id):
     """
@@ -128,28 +140,48 @@ def get_player_stats_for_game(game_id, player_id):
 
     Returns:
         List - even=item, odd=value
+        Int - status_code, 0-Succes, 1-Bot-error, 2-Wait, 500-Internal Server Error(Steam), 503-Steam Unavailable
     """
     player_stats_api_link = 'http://api.steampowered.com/ISteamUserStats/GetUserStatsForGame/v0002/?appid='+str(game_id)+'&key='+str(TOKENS[1])+'&steamid='+str(player_id)
     stats = []
     try:
         req_ = requests.get(player_stats_api_link)
-        recived_json = req_.json()
-        player_stats_ = recived_json.get('playerstats')
-        player_stats = player_stats_.get('stats')
+        status_code = req_.status_code
+        if(status_code == 200):
+            recived_json = req_.json()
+            player_stats_ = recived_json.get('playerstats')
+            player_stats = player_stats_.get('stats')
 
-        for each in player_stats:
-            for val in each :
-                stats.append(each[val])
+            if(type(player_stats) == list):
+                for each in player_stats:
+                    for val in each :
+                        stats.append(each[val])
 
-        return stats
+                return stats, 0
+            else:
+                stats.append('no_stats_avail_for_this_game')
+                return stats, 0
+        
+        else:
+            # Deal with the errors:
+            if (status_code <= 405):
+                stats.append('not_found') # steam_stats_failed
+                return stats, 1
+            if (status_code == 429):
+                stats.append('not_found') # rate_limiting
+                return stats, 2
+            if (status_code > 430):
+                stats.append('not_found') # steam_api_failed
+                return stats, status_code
+
     
     except:
         stats.append('not_found')
-        return stats
+        return stats, 1000
 
 
 
-# Discord Steam Stats Bot - v2.0 - github.com/davidp-ro 
+# Discord Steam Stats Bot - v2.1 - github.com/davidp-ro 
 # Initial setup for discord: 
 @client.event
 async def on_ready():
@@ -189,7 +221,7 @@ async def on_message(message):
             msg_ - String, user !stats command message.
 
         Returns:
-            List, List - The 2 lists containing left and right text.
+            String, String - The 2 strings containing left and right text.
         """
         game_id = msg_[1]
         player_ = msg_[2]
@@ -197,31 +229,57 @@ async def on_message(message):
         # Convert player id from link to Steam64:
         player_id = transform_steam_url_to_steam64ID(player_)
         # Get the Stats list:
-        stats = get_player_stats_for_game(game_id, player_id)
+        stats, resp = get_player_stats_for_game(game_id, player_id)
         
-        text_left, text_right = "", ""
-        i, j = 0, 2
-        step = 4
-        maxsize = len(stats) / 4 #FIXME: THIS IS TEMPORARY. Maximum limit for each embed element is 1024 chars but atm I am doing this dirty just to have a working stats command.
+        #-------------------------------------
+        logging.info(f'[Player-Stats] Response from steam: {resp}')
+        #-------------------------------------
 
-        while i < (maxsize - step):
-            if(str(stats[i]).startswith('GI')):
-                i += step # I want to ignore them because they're just too long and not very usefull.
-            else:
-                stats[i] = str(stats[i]).replace('_', ' ') # Switch from snake case
-                stats[i] = stats[i].title() # Capitalize each first letter
-                text_left += stats[i] + ' - ' + str(stats[i+1]) + '\n'
-                i += step
-        while j < (maxsize - 2):
-            if(str(stats[j]).startswith('GI')):
-                j += step # I want to ignore them because they're just too long and not very usefull.
-            else:
-                stats[j] = str(stats[j]).replace('_', ' ') # Switch from snake case
-                stats[j] = stats[j].title() # Capitalize each first letter
-                text_right += stats[j] + ' - ' + str(stats[j+1]) + '\n'
-                j += step
+        """
+            Dealing with errors.
+        """ 
+        if(stats[0] == 'not_found'):
+            if(resp == 0):
+                return "No stats found.", "Is your profile set to public?"
+            if(resp == 1):
+                return "Steam Stats failed :(\nSS--FAIL_UNKNOWN", "Try again later.\n*(This shouldn't have happened)*"
+            if(resp == 2):
+                return "Too many requests at a time", "Please wait a minute :O"
+            if(resp == 500):
+                return "Your profile might be private, or...\nSteam Servers are not happy :)\n\n[Response: 500] Internal Server Error", "Check that your profile is public, and check for typo's\nTry again later.\n\nAn unrecoverable error has occurred, please try again."
+            if(resp == 503):
+                return "Steam Servers are down.\n*Error code:* SS-STEAM--FAILED_CONNECTION", "Check their [status](https://steamstat.us/)"
+            if(resp == 1000):
+                return ":warning: Exception occured.\n*Error code:* SS--EXCEPT-GET_STATS", "If you know what this means please submit it as an issue [here](https://github.com/davidp-ro/Discord-Bots/issues)."
 
-        return text_left, text_right
+        elif stats[0] == 'no_stats_avail_for_this_game':
+            return f"The player {player_} has no stats for {game_id}", "This can also be caused if the game does not support stats."
+
+        else: #found:
+            text_left, text_right = "", ""
+            
+            i, j = 0, 2
+            step = 4
+            maxsize = len(stats)
+
+            while i < (maxsize - step):
+                if(str(stats[i]).startswith('GI')):
+                    i += step # I want to ignore them because they're just too long and not very usefull.
+                else:
+                    stats[i] = str(stats[i]).replace('_', ' ') # Switch from snake case
+                    stats[i] = stats[i].title() # Capitalize each first letter
+                    text_left += stats[i] + ' - ' + str(stats[i+1]) + '\n'
+                    i += step
+            while j < (maxsize - 2):
+                if(str(stats[j]).startswith('GI')):
+                    j += step # I want to ignore them because they're just too long and not very usefull.
+                else:
+                    stats[j] = str(stats[j]).replace('_', ' ') # Switch from snake case
+                    stats[j] = stats[j].title() # Capitalize each first letter
+                    text_right += stats[j] + ' - ' + str(stats[j+1]) + '\n'
+                    j += step
+
+            return text_left, text_right
 
     # Actually showing the embed.
     async def show_player_stats(text_left, text_right):
@@ -237,24 +295,54 @@ async def on_message(message):
         Returns:
             None
         """
-        embed = discord.Embed(title="WIP(aka not all stats shown)", colour=discord.Colour(0x5168bb), timestamp=datetime.datetime.utcfromtimestamp(1586763369))
+        
+        embed = discord.Embed(title=f"Steam Stats for {msg_[2]}:", colour=discord.Colour(0x5168bb))
 
         embed.set_thumbnail(url="https://cdn.discordapp.com/app-icons/697719810791833680/dd6d71e2bd5f3670d3342f5bc714fe41.png?size=256")
-        embed.set_author(name="All the steam stats :)", url="https://discordapp.com")
-        embed.set_footer(text="Lots of data so sorry for the spam :)", icon_url="https://cdn.discordapp.com/avatars/474134951109853185/0b0abc779eb1ef4ae755d38e65282abc.png")
+        embed.set_footer(text="Suggestion / Issue? github.com/davidp-ro/Discord-Bots | Support me paypal.me/davidpescariu", icon_url="https://cdn.discordapp.com/avatars/474134951109853185/0b0abc779eb1ef4ae755d38e65282abc.png")
+        
+        if(len(text_left) < 900 or len(text_right) < 900):
+            # We are under the 1000 char limit for one embed so we are fine:
+            embed.add_field(name="Stats:", value=text_left, inline=True)
+            embed.add_field(name="and some more:", value=text_right, inline=True)
 
-        embed.add_field(name="Stats:", value=text_left, inline=True)
-        embed.add_field(name="and some more:", value=text_right, inline=True)
+            await message.channel.send(embed=embed)
+        
+        else: # Exceding the limit
+            needed = max(len(text_left), len(text_right))
+            rnd_needed = round(needed)
 
-        await message.channel.send(embed=embed)
+            if(needed > rnd_needed):
+                needed = rnd_needed + 1
+            else:
+                needed = rnd_needed
 
+            list_text_left, list_text_right, return_code_trimmer = Trimmer.game_stats(text_left, text_right) # Get our text that got trimmed.
+
+            if (return_code_trimmer == 0):
+                embed.add_field(name="Stats:", value=list_text_left[0], inline=True)
+                embed.add_field(name="and some more:", value=list_text_right[0], inline=True)
+                index = 1
+                while index <= needed:
+                    embed.add_field(name="...", value=list_text_left[0], inline=True)
+                    embed.add_field(name="...", value=list_text_right[0], inline=True)
+                    index += 1
+
+                await message.channel.send(embed=embed)
+
+            else:
+                embed.add_field(name="Steam Stats Failed.", value="Steam Stats failed :(\nSS--TRIM_FAILED", inline=True)
+                embed.add_field(name="...", value="Try again later.\n*(This shouldn't have happened)*", inline=True)
+
+                await message.channel.send(embed=embed)
+    
     if message.author == client.user:
         # Ignoring becuase it's the bot...
         return
     else: # Check if it's a command
         # Normal User Commands:
         if message.content.startswith(CALL_TAG + 'plzhelp'):
-            await message.channel.send('Steam Stats bot - v2.0\n!news *Game ID* <- latest news from a game, *ex: !news 730 - CS:GO*\n!stats Game Account')
+            await message.channel.send('Steam Stats bot - v2.1\n!news *Game ID* <- latest news from a game, *ex: !news 730 - CS:GO*\n!stats Game Account <- get the player stats for that game')
         
         if message.content.startswith(CALL_TAG + 'devhelp'):
             await message.channel.send('Syntax: !key=DEV_KEY <admin command>')

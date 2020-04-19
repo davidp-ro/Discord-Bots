@@ -2,6 +2,10 @@
 
 _Small bot that gives you different stats and the latest news for your favorite games._
 
+*This project was made more for me to learn how to work with api's and test making a bot, and is now abandoned*
+
+*If you want a good Steam Bot for discord check [this one](http://www.steambot.site/)*
+
 #
 
 [**Add this bot to your Discord Server!**](https://discordapp.com/api/oauth2/authorize?client_id=697719810791833680&permissions=52288&scope=bot)
